@@ -1,0 +1,41 @@
+from flask import Flask, request, jsonify, make_response: This line imports the necessary modules from Flask for creating the application (Flask), handling HTTP requests (request), converting data to JSON format (jsonify), and creating HTTP responses (make_response).
+
+from flask_sqlalchemy import SQLAlchemy: This line imports the SQLAlchemy module, which is an Object-Relational Mapping (ORM) library for working with databases in Flask.
+
+db_file = "F:\\SQLite\\Databases\\Student.db": This line defines the path to the SQLite database file. You can modify this path to point to your desired location.
+
+app = Flask(__name__): This line creates a Flask application instance.
+
+app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///"+ db_file: This line sets the configuration for the SQLAlchemy extension to use SQLite as the database and specifies the path to the database file.
+
+db = SQLAlchemy(app): This line initializes the SQLAlchemy extension with the Flask application.
+
+class Student(db.Model):: This line defines a SQLAlchemy model class named Student that represents the "Student" table in the database.
+
+__tablename__ = 'Student': This line specifies the name of the database table associated with the Student model.
+
+student_id = db.Column(db.Integer, primary_key=True): This line defines a column named student_id of type Integer in the Student table. It is set as the primary key for the table.
+
+first_name = db.Column(db.String(30)): This line defines a column named first_name of type String with a maximum length of 30 characters in the Student table.
+
+last_name = db.Column(db.String(30)): This line defines a column named last_name of type String with a maximum length of 30 characters in the Student table.
+
+def json(self):: This line defines a method named json within the Student class.
+
+return {'student_id': self.student_id, 'first_name': self.first_name, 'last_name': self.last_name}: This line returns a dictionary representation of a Student object, containing the values of its attributes (student_id, first_name, last_name).
+
+@app.route('/test', methods=['GET']): This line defines a route decorator for the /test URL path with the HTTP method set to GET.
+
+def test():: This line defines a function named test that will be executed when the /test route is accessed.
+
+return make_response(jsonify({'message': 'test route'}), 200): This line creates a JSON response with a message and a status code of 200 (OK).
+
+The next several lines define additional routes for the API, including /students to retrieve all students, /students/<int:id> to retrieve a specific student by their ID, /students (POST) to create a new student, /students/<int:id> (PUT) to update a student, and /students/<int:id> (DELETE) to delete a student.
+
+if __name__ == '__main__':: This line checks if the script is being executed directly (not imported as a module).
+
+app.run(): This line runs the Flask application. When executed directly, it starts the development server so that the API can be accessed.
+
+
+
+
