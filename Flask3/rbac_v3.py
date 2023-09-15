@@ -51,14 +51,14 @@ class ApiEndpoints(db.Model):
     api_endpoint = db.Column(db.String(30), nullable=False)
     parameter = db.Column(db.String(30), nullable=False)
     method = db.Column(db.String(30), nullable=False)
-    privileges = db.Column(db.String(30))
+    privilege_id = db.Column(db.Integer)
 
     # Define a unique constraint on api_endpoint, parameter, and method
     __table_args__ = (
         db.UniqueConstraint('api_endpoint', 'parameter', 'method', name='uq_api_endpoint_parameters_method'),
     )
     def json(self):
-        return {'api_endpoint': self.api_endpoint, 'parameter': self.parameter, 'role': self.role, 'method': self.method, 'privileges': self.privileges, 'role': self.role }
+        return {'api_endpoint': self.api_endpoint, 'parameter': self.parameter, 'method': self.method, 'privilege_id': self.privilege_id}
 
 class ApiEndpointRoles(db.Model):
     __tablename__ = 'api_endpoint_roles'
@@ -68,7 +68,6 @@ class ApiEndpointRoles(db.Model):
     def json(self):
         return {'api_endpoint_id': self.api_endpoint_id, 'role_id': self.role_id }
     
-
 
 class Privileges(db.Model):
     __tablename__ = 'privileges'
@@ -92,11 +91,10 @@ class UserRole(db.Model):
 class UserPrivileges(db.Model):
     __tablename__ = 'user_privileges'
     user_id = db.Column(db.Integer(), db.ForeignKey('arc_persons.user_id'), primary_key=True)
-    role_id = db.Column(db.Integer(), db.ForeignKey('role.id'), primary_key=True)
     privilege_id = db.Column(db.Integer(), db.ForeignKey('privileges.privilege_id'), primary_key=True)
 
     def json(self):
-        return {'user_id': self.user_id, 'role_id': self.role_id, 'privilege_id': self.privilege_id }
+        return {'user_id': self.user_id, 'privilege_id': self.privilege_id }
 
 def role_required(api_endpoint, method):
     def decorator(fn):
@@ -104,7 +102,7 @@ def role_required(api_endpoint, method):
         def wrapper(*args, **kwargs):
             # Get the current user's identity from the JWT
             current_user_id = get_jwt_identity()
-            
+
             # Query the user's roles
             user_roles = UserRole.query.filter_by(user_id=current_user_id).all()
             role_ids = [user_role.role_id for user_role in user_roles]
@@ -118,14 +116,21 @@ def role_required(api_endpoint, method):
                 ApiEndpoints.api_endpoint_id.in_(api_endpoint_ids),
                 ApiEndpoints.api_endpoint == api_endpoint,
                 ApiEndpoints.method == method).all()
+            print(endpoints)
 
-            # Check if the user has any of the required roles for the endpoint and method
-            if endpoints:
-                # User has the required role, allow access to the route
-                return fn(*args, **kwargs)
-            else:
-                # User does not have the required role, deny access
-                return jsonify({'message': 'Access denied'}), 403
+            # Query user privileges
+            user_privileges = UserPrivileges.query.filter_by(user_id=current_user_id).all()
+            privilege_ids = [user_privilege.privilege_id for user_privilege in user_privileges]
+
+            # Check if the user has any of the required roles or privileges for the endpoint and method
+            for endpoint in endpoints:
+                if endpoint.privilege_id in privilege_ids:
+                    # User has the required privilege, allow access to the route
+                    return fn(*args, **kwargs)
+
+            # User does not have the required role or privilege, deny access
+            return jsonify({'message': 'Access denied. Role or privilege required for {}: {}'.format(api_endpoint, method)}), 403
+
         return wrapper
     return decorator
 
@@ -309,23 +314,58 @@ def get_user(author_id):
     
 
 @app.route('/api_endpoints', methods=['GET'])
-#@jwt_required()
+@jwt_required()
 def get_api_endpoints():
     try:
         api_endpoints = ApiEndpoints.query.all()
         return make_response(jsonify([api_endpoint.json() for api_endpoint in api_endpoints]), 200)
     except:
         return make_response(jsonify({'message': 'error getting api endpoints'}), 500)
-    
+        
+# create an api endpoints
+@app.route('/api_endpoints', methods=['POST'])
+def create_api_endpoints():
+    try:
+        data = request.get_json()
+        new_api = ApiEndpoints(
+            #api_endpoints_id = data['api_endpoints_id'],
+            api_endpoint      = data['api_endpoint'],
+            parameter         = data['parameter'],
+            method            = data['method'],
+            privilege_id      = data['privilege_id']
+        )
+        db.session.add(new_api)
+        db.session.commit()
+        return make_response(jsonify({'message': 'New api created'}), 201)
+    except:
+        return make_response(jsonify({'message': 'Error creating api'}), 500)
 
+# update an api_endpoint
+@app.route('/api_endpoints/<int:api_endpoint_id>', methods=['PUT'])
+def update_api_endpoint(api_endpoint_id):
+    try:
+        endpoint = ApiEndpoints.query.filter_by(api_endpoint_id=api_endpoint_id).first()
+        print(endpoint)
+        if endpoint:
+            data = request.get_json()
+            #endpoint.api_endpoint = data['api_endpoint']
+            endpoint.parameter = data['parameter']
+            #endpoint.method = data['method']
+            endpoint.privilege_id = data['privilege_id']
+            db.session.commit()
+            return make_response(jsonify({'message': 'Endpoint updated'}), 200)
+        return make_response(jsonify({'message': 'Endpoint not found'}), 404)
+    except:
+        return make_response(jsonify({'message': 'Error updating Endpoint'}), 500)
+       
 @app.route('/api_endpoint_roles', methods=['GET'])
 @jwt_required()
 def get_api_endpoint_roles():
     try:
         api_endpoint_roles = ApiEndpointRoles.query.all()
         return make_response(jsonify([api_endpoint_role.json() for api_endpoint_role in api_endpoint_roles]), 200)
-    except:
-        return make_response(jsonify({'message': 'error getting api endpoint roles'}), 500)
+    except Exception as e:
+        return make_response(jsonify({'message': 'Error getting api endpoints', 'error': str(e)}), 500)
     
     
 @app.route('/api_endpoint_role', methods=['GET'])
@@ -365,6 +405,15 @@ def get_privileges():
         return make_response(jsonify([privilege.json() for privilege in privileges]), 200)
     except:
         return make_response(jsonify({'message': 'Error getting privileges'}), 500)
+
+@app.route('/user_privileges', methods=['GET'])
+def get_user_privileges():
+    try:
+        user_privileges = UserPrivileges.query.all()
+        return make_response(jsonify([user_privilege.json() for user_privilege in user_privileges]), 200)
+    except:
+        return make_response(jsonify({'message': 'Error getting user privileges'}), 500)
+    
     
 @app.route('/get_current_user_privileges', methods=['GET'])
 @jwt_required()  # This route requires authentication

@@ -5,6 +5,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import uuid
 from functools import wraps
+import requests
 
 db_file = "F:\\SQLite\\Databases\\arc_ng2.db"
 
@@ -51,14 +52,14 @@ class ApiEndpoints(db.Model):
     api_endpoint = db.Column(db.String(30), nullable=False)
     parameter = db.Column(db.String(30), nullable=False)
     method = db.Column(db.String(30), nullable=False)
-    privileges = db.Column(db.String(30))
+    privilege_id = db.Column(db.Integer)
 
     # Define a unique constraint on api_endpoint, parameter, and method
     __table_args__ = (
         db.UniqueConstraint('api_endpoint', 'parameter', 'method', name='uq_api_endpoint_parameters_method'),
     )
     def json(self):
-        return {'api_endpoint': self.api_endpoint, 'parameter': self.parameter, 'role': self.role, 'method': self.method, 'privileges': self.privileges, 'role': self.role }
+        return {'api_endpoint': self.api_endpoint, 'parameter': self.parameter, 'method': self.method, 'privilege_id': self.privilege_id}
 
 class ApiEndpointRoles(db.Model):
     __tablename__ = 'api_endpoint_roles'
@@ -68,7 +69,6 @@ class ApiEndpointRoles(db.Model):
     def json(self):
         return {'api_endpoint_id': self.api_endpoint_id, 'role_id': self.role_id }
     
-
 
 class Privileges(db.Model):
     __tablename__ = 'privileges'
@@ -92,11 +92,10 @@ class UserRole(db.Model):
 class UserPrivileges(db.Model):
     __tablename__ = 'user_privileges'
     user_id = db.Column(db.Integer(), db.ForeignKey('arc_persons.user_id'), primary_key=True)
-    role_id = db.Column(db.Integer(), db.ForeignKey('role.id'), primary_key=True)
     privilege_id = db.Column(db.Integer(), db.ForeignKey('privileges.privilege_id'), primary_key=True)
 
     def json(self):
-        return {'user_id': self.user_id, 'role_id': self.role_id, 'privilege_id': self.privilege_id }
+        return {'user_id': self.user_id, 'privilege_id': self.privilege_id }
 
 def role_required(api_endpoint, method):
     def decorator(fn):
@@ -104,7 +103,7 @@ def role_required(api_endpoint, method):
         def wrapper(*args, **kwargs):
             # Get the current user's identity from the JWT
             current_user_id = get_jwt_identity()
-            
+
             # Query the user's roles
             user_roles = UserRole.query.filter_by(user_id=current_user_id).all()
             role_ids = [user_role.role_id for user_role in user_roles]
@@ -118,51 +117,83 @@ def role_required(api_endpoint, method):
                 ApiEndpoints.api_endpoint_id.in_(api_endpoint_ids),
                 ApiEndpoints.api_endpoint == api_endpoint,
                 ApiEndpoints.method == method).all()
+            print(endpoints)
 
-            # Check if the user has any of the required roles for the endpoint and method
-            if endpoints:
-                # User has the required role, allow access to the route
-                return fn(*args, **kwargs)
-            else:
-                # User does not have the required role, deny access
-                return jsonify({'message': 'Access denied'}), 403
+            # Query user privileges
+            user_privileges = UserPrivileges.query.filter_by(user_id=current_user_id).all()
+            privilege_ids = [user_privilege.privilege_id for user_privilege in user_privileges]
+
+            # Check if the user has any of the required roles or privileges for the endpoint and method
+            for endpoint in endpoints:
+                if endpoint.privilege_id in privilege_ids:
+                    # User has the required privilege, allow access to the route
+                    return fn(*args, **kwargs)
+
+            # User does not have the required role or privilege, deny access
+            return jsonify({'message': 'Access denied. Role or privilege required for {}: {}'.format(api_endpoint, method)}), 403
+
         return wrapper
     return decorator
 
-@app.route('/register', methods=['POST'])
+@app.route('/users', methods=['POST'])
 @jwt_required()
 @role_required('/users', 'POST')
 def register():
-    data = request.get_json()
-    user_name = data['user_name']
-    first_name = data['first_name']
-    last_name = data['last_name']
-    email_address = data['email_address']
-    password = data['password']
-    role_name = data['role_name']  # Get the desired role name from the registration data
+    try:
+        data = request.get_json()
+        user_name = data['user_name']
+        first_name = data['first_name']
+        last_name = data['last_name']
+        email_address = data['email_address']
+        password = data['password']
+        privilege_names = data.get('privilege_names', [])  # Get privilege names from the registration data, default to an empty list
+        role_names = data.get('role_names', [])  # Get role names from the registration data, default to an empty list
 
-    # Hash the password
-    hashed_password = generate_password_hash(password, method='sha256')
+        # Hash the password
+        hashed_password = generate_password_hash(password, method='sha256')
 
-    # Create a new user instance
-    new_user = Users(
-        user_name=user_name,
-        first_name=first_name,
-        last_name=last_name,
-        email_address=email_address,
-        password=hashed_password
-    )
+        # Create a new user instance
+        new_user = Users(
+            user_name=user_name,
+            first_name=first_name,
+            last_name=last_name,
+            email_address=email_address,
+            password=hashed_password
+        )
 
-    # Retrieve the specified role from the database
-    role = Role.query.filter_by(name=role_name).first()
-
-    if role:
-        new_user.roles.append(role)  # Assign the retrieved role to the user
         db.session.add(new_user)
         db.session.commit()
-        return jsonify({'message': 'User created successfully'}), 201
-    else:
-        return jsonify({'message': 'Role not found'}), 400
+
+        # Now, call the user_privileges API to assign privileges to the user
+        user_privileges_data = {
+            "username": user_name,
+            "privilege_names": privilege_names
+        }
+
+        user_privileges_response = requests.post("http://127.0.0.1:5000/user_privileges", json=user_privileges_data)
+
+        # Check the response from the user_privileges API
+        if user_privileges_response.status_code == 201:
+            # Now, call the user_roles API to assign roles to the user
+            user_roles_data = {
+                "username": user_name,
+                "role_names": role_names
+            }
+
+            user_roles_response = requests.post("http://127.0.0.1:5000/user_roles", json=user_roles_data)
+
+            if user_roles_response.status_code == 201:
+                return jsonify({'message': 'User created successfully with assigned privileges and roles'}), 201
+            else:
+                # Handle the case where user roles assignment failed
+                return jsonify({'message': 'User created, but roles assignment failed'}), 500
+        else:
+            # Handle the case where user privileges assignment failed
+            return jsonify({'message': 'User created, but privileges assignment failed'}), 500
+
+    except Exception as e:
+        return jsonify({'message': str(e)}), 500
+    
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -202,6 +233,7 @@ def get_current_user():
         current_user_id = get_jwt_identity()
         return jsonify({'current_user_id': current_user_id})
 
+
 @app.route('/get_current_user_roles', methods=['GET'])
 @jwt_required()  # This route requires authentication
 def get_current_user_roles():
@@ -220,7 +252,7 @@ def get_current_user_roles():
         return make_response(jsonify({'message': 'Error getting user roles', 'error': str(e)}), 500)
 
 # update a user
-@app.route('/update_users/<int:user_id>', methods=['PUT'])
+@app.route('/users/<int:user_id>', methods=['PUT'])
 def update_user(user_id):
     try:
         user = Users.query.filter_by(user_id=user_id).first()
@@ -237,7 +269,7 @@ def update_user(user_id):
         return make_response(jsonify({'message': 'error updating user', 'error': str(e)}), 500)
 
 # delete a user
-@app.route('/delete_users/<int:user_id>', methods=['DELETE'])
+@app.route('/users/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
     try:
         user = Users.query.filter_by(user_id=user_id).first()
@@ -250,7 +282,7 @@ def delete_user(user_id):
         return make_response(jsonify({'message': 'error deleting user'}), 500)
 
 
-@app.route('/create_author', methods=['POST'])
+@app.route('/authors', methods=['POST'])
 @jwt_required()  # This route requires authentication
 def create_author():
     try:
@@ -269,8 +301,9 @@ def create_author():
         return jsonify({'message': 'Author created successfully'}), 201
     except Exception as e:
         return make_response(jsonify({'message': str(e)}), 500)
-    
-@app.route('/delete_author/<int:author_id>', methods=['DELETE'])
+
+
+@app.route('/authors/<int:author_id>', methods=['DELETE'])
 @jwt_required()
 def delete_author(author_id):
     try:
@@ -286,7 +319,8 @@ def delete_author(author_id):
         return jsonify({'message': 'Author deleted successfully'}), 200
     except Exception as e:
         return make_response(jsonify({'message': str(e)}), 500)
-    
+
+
 @app.route('/authors', methods=['GET'])
 @jwt_required()
 def get_authors():
@@ -309,26 +343,61 @@ def get_user(author_id):
     
 
 @app.route('/api_endpoints', methods=['GET'])
-#@jwt_required()
+@jwt_required()
 def get_api_endpoints():
     try:
         api_endpoints = ApiEndpoints.query.all()
         return make_response(jsonify([api_endpoint.json() for api_endpoint in api_endpoints]), 200)
     except:
         return make_response(jsonify({'message': 'error getting api endpoints'}), 500)
-    
+        
+# create an api endpoints
+@app.route('/api_endpoints', methods=['POST'])
+def create_api_endpoints():
+    try:
+        data = request.get_json()
+        new_api = ApiEndpoints(
+            #api_endpoints_id = data['api_endpoints_id'],
+            api_endpoint      = data['api_endpoint'],
+            parameter         = data['parameter'],
+            method            = data['method'],
+            privilege_id      = data['privilege_id']
+        )
+        db.session.add(new_api)
+        db.session.commit()
+        return make_response(jsonify({'message': 'New api created'}), 201)
+    except:
+        return make_response(jsonify({'message': 'Error creating api'}), 500)
 
-@app.route('/api_endpoint_roles', methods=['GET'])
+# update an api_endpoint
+@app.route('/api_endpoints/<int:api_endpoint_id>', methods=['PUT'])
+def update_api_endpoint(api_endpoint_id):
+    try:
+        endpoint = ApiEndpoints.query.filter_by(api_endpoint_id=api_endpoint_id).first()
+        print(endpoint)
+        if endpoint:
+            data = request.get_json()
+            #endpoint.api_endpoint = data['api_endpoint']
+            endpoint.parameter = data['parameter']
+            #endpoint.method = data['method']
+            endpoint.privilege_id = data['privilege_id']
+            db.session.commit()
+            return make_response(jsonify({'message': 'Endpoint updated'}), 200)
+        return make_response(jsonify({'message': 'Endpoint not found'}), 404)
+    except:
+        return make_response(jsonify({'message': 'Error updating Endpoint'}), 500)
+       
+@app.route('/api_endpoints_roles', methods=['GET'])
 @jwt_required()
 def get_api_endpoint_roles():
     try:
         api_endpoint_roles = ApiEndpointRoles.query.all()
         return make_response(jsonify([api_endpoint_role.json() for api_endpoint_role in api_endpoint_roles]), 200)
-    except:
-        return make_response(jsonify({'message': 'error getting api endpoint roles'}), 500)
+    except Exception as e:
+        return make_response(jsonify({'message': 'Error getting api endpoints', 'error': str(e)}), 500)
     
     
-@app.route('/api_endpoint_role', methods=['GET'])
+@app.route('/api_endpoint_roles', methods=['GET'])
 @jwt_required()
 def get_api_endpoint_role():
     api_endpoint = request.args.get('api_endpoint')
@@ -341,7 +410,7 @@ def get_api_endpoint_role():
     api_endpoint_info = ApiEndpoints.query.filter_by(api_endpoint=api_endpoint, method=method).first()
 
     if not api_endpoint_info:
-        return jsonify({'message': 'API endpoint not found or method not supported'}), 404
+        return jsonify({'message': 'API endpoint not found or method not supported'}), 404 
 
     # Get the associated API endpoint ID
     api_endpoint_id = api_endpoint_info.api_endpoint_id
@@ -357,7 +426,6 @@ def get_api_endpoint_role():
     return jsonify(role_names), 200
     
 
-
 @app.route('/privileges', methods=['GET'])
 def get_privileges():
     try:
@@ -365,6 +433,15 @@ def get_privileges():
         return make_response(jsonify([privilege.json() for privilege in privileges]), 200)
     except:
         return make_response(jsonify({'message': 'Error getting privileges'}), 500)
+
+@app.route('/user_privileges', methods=['GET'])
+def get_user_privileges():
+    try:
+        user_privileges = UserPrivileges.query.all()
+        return make_response(jsonify([user_privilege.json() for user_privilege in user_privileges]), 200)
+    except:
+        return make_response(jsonify({'message': 'Error getting user privileges'}), 500)
+   
     
 @app.route('/get_current_user_privileges', methods=['GET'])
 @jwt_required()  # This route requires authentication
@@ -383,6 +460,100 @@ def get_current_user_privileges():
         return jsonify({'privilege_names': privilege_names}), 200
     except Exception as e:
         return make_response(jsonify({'message': 'Error getting user privileges', 'error': str(e)}), 500)
+
+
+# Create a new user privilege by username and privilege_names
+@app.route('/user_privileges', methods=['POST'])    
+def create_user_privileges():
+    try:
+        # Parse username and privilege_names from the request body
+        data = request.get_json()
+        print(data)
+        username = data['username']
+        privilege_names = data['privilege_names']  # Expect a list of privilege names
+
+        # Query the database to get the user by username
+        user = Users.query.filter_by(user_name=username).first()
+        print(user)
+        if user:
+            # Iterate through the list of privilege names
+            for privilege_name in privilege_names:
+                # Query the database to get the privilege by name
+                privilege = Privileges.query.filter_by(privilege_name=privilege_name).first()
+                print(privilege)
+                if privilege:
+                    # Check if the user privilege already exists
+                    existing_user_privilege = UserPrivileges.query.filter_by(user_id=user.user_id, privilege_id=privilege.privilege_id).first()
+                    print(existing_user_privilege)
+                    if existing_user_privilege:
+                        return make_response(jsonify({'message': f'User already has privilege: {privilege_name}'}), 400)
+
+                    # Create a new user_privilege entry
+                    new_user_privilege = UserPrivileges(user_id=user.user_id, privilege_id=privilege.privilege_id)
+                    db.session.add(new_user_privilege)
+                else:
+                    return make_response(jsonify({'message': f'Privilege not found: {privilege_name}'}), 404)
+
+            # Commit all user_privilege entries to the database
+            db.session.commit()
+
+            # Return a success message
+            return jsonify({'message': 'User privileges assigned successfully'}), 201
+        else:
+            return make_response(jsonify({'message': 'User not found'}), 404)
+    except Exception as e:
+        return make_response(jsonify({'message': str(e)}), 500)
+
+@app.route('/user_roles', methods=['GET'])
+def get_user_roles():
+    try:
+        user_roles = UserRole.query.all()
+        return make_response(jsonify([user_role.json() for user_role in user_roles]), 200)
+    except:
+        return make_response(jsonify({'message': 'Error getting user roles'}), 500)
+
+@app.route('/user_roles', methods=['POST'])
+def create_user_roles():
+    try:
+        # Parse username and role_names from the request body
+        data = request.get_json()
+        #print(data)
+        username = data['username']
+        #print(username)
+        role_names = data['role_names']  # Expect a list of role names
+        #print(role_names)
+
+        # Query the database to get the user by username
+        user = Users.query.filter_by(user_name=username).first()
+        print(user)
+        if user:
+            # Iterate through the list of role names
+            for role_name in role_names:
+                # Query the database to get the role by name
+                role = Role.query.filter_by(name=role_name).first()
+                #print(role)
+                
+                if role:
+                    # Check if the user already has that role
+                    existing_user_role = UserRole.query.filter_by(user_id=user.user_id, role_id=role.id).first()
+                    print(existing_user_role)
+                    if not existing_user_role:
+                        # Create a new user_role entry
+                        new_user_role = UserRole(user_id=user.user_id,
+                                                 role_id=role.id)
+                        db.session.add(new_user_role)
+                else:
+                    return make_response(jsonify({'message': f'Role not found: {role_name}'}), 404)
+
+            # Commit all user_role entries to the database
+            db.session.commit()
+
+            # Return a success message
+            return jsonify({'message': 'User roles assigned successfully'}), 201
+        else:
+            return make_response(jsonify({'message': 'User not found'}), 404)
+    except Exception as e:
+        return make_response(jsonify({'message': str(e)}), 500)
 
 
 @app.route('/current_user_info', methods=['GET'])
