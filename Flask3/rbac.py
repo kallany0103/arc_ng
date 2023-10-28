@@ -28,7 +28,7 @@ class Users(db.Model):
     last_name = db.Column(db.String(30))
     email_address = db.Column(db.String(50), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
-    roles = db.relationship('Role', secondary='user_roles', backref='users')
+    ##roles = db.relationship('Role', secondary='user_roles', backref='users')
 
     def json(self):
         return {'user_id': self.user_id, 'user_name': self.user_name, 'email_address': self.email_address}
@@ -154,15 +154,16 @@ def get_users():
     except:
         return make_response(jsonify({'message': 'Error getting users'}), 500)
     
+# get a user by id
 @app.route('/users/<int:user_id>', methods=['GET'])
-def get_specific_user(user_id):
+def get_user(user_id):
     try:
-        user = Users.query.get(user_id)
+        user = Users.query.filter_by(user_id=user_id).first()
         if user:
-            return jsonify({'user': user.to_json()}), 200
-        return jsonify({'message': 'User not found'}), 404
+            return make_response(jsonify({'user': user.json()}), 200)
+        return make_response(jsonify({'message': 'user not found'}), 404)
     except Exception as e:
-        return jsonify({'message': 'Error getting user'}), 500
+        return make_response(jsonify({'message': 'Error getting user', 'error': str(e)}), 500)
 
 @app.route('/get_current_user', methods=['GET'])
 @jwt_required()  # This route requires authentication
