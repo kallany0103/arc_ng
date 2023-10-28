@@ -152,7 +152,7 @@ def register():
         role_names = data.get('role_names', [])  # Get role names from the registration data, default to an empty list
 
         # Hash the password
-        hashed_password = generate_password_hash(password, method='sha256')
+        hashed_password = generate_password_hash(password, method='pbkdf2:sha256', salt_length=16)
 
         # Create a new user instance
         new_user = Users(
