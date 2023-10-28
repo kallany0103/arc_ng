@@ -622,7 +622,7 @@ def reset_user_password():
     if not check_password_hash(user.password, old_password):
         return jsonify({'message': 'Invalid old password'}), 401
     
-    hashed_new_password = generate_password_hash(new_password, method='sha256')
+    hashed_new_password = generate_password_hash(new_password, method='pbkdf2:sha256', salt_length=16)
     user.password = hashed_new_password
     
     db.session.commit()
